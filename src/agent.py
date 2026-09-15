@@ -76,12 +76,81 @@ def _sentiment_score(text: str) -> float:
         return max(-1.0, min(1.0, score))
 
 
+def _sanitize_historical_reply(text: str) -> str:
+    """
+    Remove customer-specific artefacts from a retrieved brand reply so that
+    only the reusable troubleshooting/resolution content is kept.
+
+    Stripped patterns (order matters):
+      1. Leading @handle  – e.g. "@279620 Hey …"
+      2. Greeting + name – e.g. "Hey Kayla!", "Hi there, John –", "Hello Alex,"
+      3. Inline @handles – e.g. "please DM @SpotifySupport"
+      4. Bare numeric IDs left behind after handle stripping – e.g. "279620"
+      5. URLs             – e.g. "https://t.co/xyz"
+      6. Collapse whitespace
+    """
+    # 1. Strip leading @handle (Twitter reply format: "@12345 ...", "@username ...")
+    text = re.sub(r"^@\w+\s*", "", text).strip()
+
+    # 2. Strip greeting + customer name at the start of the reply.
+    #    Matches patterns like:
+    #      "Hey Kayla!"  "Hi there, John -"  "Hello Alex,"  "Hey!"
+    #    The name part is optional so bare "Hey!" is also cleaned.
+    text = re.sub(
+        r"^(?:hey|hi|hello)(?:\s+there)?[,\s]*"
+        r"(?:[A-Z][a-z]+[^a-z\s]?)?"   # optional Title-Cased name + punctuation
+        r"[\s,!\-–—]*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # 3. Strip inline @handles anywhere in the text
+    text = re.sub(r"@\w+", "", text)
+
+    # 4. Strip bare numeric tokens that are user/tweet IDs (6+ digits standalone)
+    text = re.sub(r"\b\d{6,}\b", "", text)
+
+    # 5. Strip URLs
+    text = re.sub(r"https?://\S+", "", text)
+
+    # 6. Collapse extra whitespace
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\s*([,!?.])\s*", r"\1 ", text)  # tidy punctuation spacing
+    return text.strip(" ,!-–—")
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  Retriever
 # ──────────────────────────────────────────────────────────────────────────────
 
 class Retriever:
-    """TF-IDF cosine-similarity retriever over historical SpotifyCares threads."""
+    """TF-IDF cosine-similarity retriever over historical SpotifyCares threads.
+
+    Retrieval pipeline:
+      1. TF-IDF cosine similarity over the full index (unchanged).
+      2. Domain-anchor re-ranking: a small additive boost is applied when the
+         query and a candidate share domain-specific anchor keywords.  This
+         corrects false-positive lexical matches caused by ambiguous tokens
+         (e.g. "twice" matching the K-pop artist instead of "charged twice").
+         The boost is symmetric and zero when no anchors are detected, so
+         queries outside the defined domains are unaffected.
+    """
+
+    # Pairs of (domain_name, anchor_keywords).
+    # A candidate receives DOMAIN_BOOST iff the query contains ≥1 anchor from
+    # the same domain AS the candidate's customer_message.
+    _DOMAIN_ANCHORS: List[Tuple[str, List[str]]] = [
+        ("billing", [
+            "charged", "charge", "billing", "billed", "bill",
+            "subscription", "payment", "paid", "refund", "invoice",
+            "price", "fee", "fees", "cost", "money", "double charge",
+        ]),
+        ("content_catalog", [
+            "artist", "album", "song", "track", "playlist",
+            "music", "release", "single", "ep",
+        ]),
+    ]
+    _DOMAIN_BOOST = 0.15   # additive boost; chosen to outweigh spurious IDF advantage
 
     def __init__(self, index_path: Optional[Path] = None):
         if index_path is None:
@@ -101,20 +170,57 @@ class Retriever:
         self.threads: List[dict] = payload["threads"]
         self.top_k: int = cfg["retrieval"]["top_k"]
 
+    # ── Domain-anchor helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _active_domains(text: str) -> set:
+        """Return the set of domain names whose anchors appear in *text*."""
+        t = text.lower()
+        active = set()
+        for domain, anchors in Retriever._DOMAIN_ANCHORS:
+            if any(anchor in t for anchor in anchors):
+                active.add(domain)
+        return active
+
+    def _domain_boost(self, query_domains: set, candidate_msg: str) -> float:
+        """Return additive boost if candidate shares a domain anchor with the query."""
+        if not query_domains:
+            return 0.0
+        candidate_domains = self._active_domains(candidate_msg)
+        return self._DOMAIN_BOOST if query_domains & candidate_domains else 0.0
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
     def retrieve(self, query: str) -> List[dict]:
         """
         Return top-k most similar threads.
         Each result is a dict with keys:
           customer_message, brand_reply, similarity_score
+
+        similarity_score reflects the re-ranked score (tfidf_cosine + domain_boost).
         """
         vec = self.vectorizer.transform([_clean(query)])
         sims = cosine_similarity(vec, self.matrix).flatten()
-        top_idx = sims.argsort()[::-1][: self.top_k]
+
+        # Domain-anchor re-ranking: boost candidates that share the query's
+        # domain context.  Operate over an expanded candidate set (top_k * 10)
+        # so the boost can surface results that were just below the cut-off.
+        query_domains = self._active_domains(query)
+        n_candidates = min(len(self.threads), self.top_k * 10)
+        candidate_idx = sims.argsort()[::-1][:n_candidates]
+
+        boosted = []
+        for idx in candidate_idx:
+            boost = self._domain_boost(query_domains,
+                                       self.threads[idx].get("customer_message", ""))
+            boosted.append((idx, float(sims[idx]) + boost))
+
+        boosted.sort(key=lambda x: x[1], reverse=True)
 
         results = []
-        for idx in top_idx:
+        for idx, score in boosted[: self.top_k]:
             t = self.threads[idx].copy()
-            t["similarity_score"] = float(sims[idx])
+            t["similarity_score"] = score
             results.append(t)
         return results
 
@@ -399,10 +505,9 @@ class ReplyGenerator:
         best = retrieved[0] if retrieved else None
 
         if best and best["similarity_score"] > 0.10:
-            # Use the historical reply as a grounding base, citing similarity
-            base_reply = best["brand_reply"]
-            # Strip @handle prefix if present
-            base_reply = re.sub(r"^@\w+\s*", "", base_reply).strip()
+            # Sanitize the historical reply to remove customer-specific details
+            # (names, @handles, numeric IDs, URLs) before using it as grounding.
+            base_reply = _sanitize_historical_reply(best["brand_reply"])
             # Truncate if very long
             if len(base_reply) > 250:
                 base_reply = base_reply[:247] + "..."
@@ -416,7 +521,7 @@ class ReplyGenerator:
                 f"{ack}! Please send us a DM with more details about your issue "
                 f"and we'll look into it right away. "
                 f"[no close historical match found, sim="
-                f"{best['similarity_score']:.3f if best else 0:.3f}]"
+                f"{(best['similarity_score'] if best is not None else 0.0):.3f}]"
             )
 
         return reply
