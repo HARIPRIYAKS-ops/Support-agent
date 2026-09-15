@@ -1,4 +1,4 @@
-# Hiver SDE Intern Project — Customer Support Agent
+Customer Support Agent
 
 AI agent pipeline for SpotifyCares support using the Twitter Customer Support dataset (TWCS).
 
