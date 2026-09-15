@@ -1,0 +1,80 @@
+# Hiver Project Configuration
+# All values here are defaults. Override by setting the corresponding env var in .env
+# or by passing --config-override flags to scripts.
+
+# ─── Paths (relative to repo root) ───────────────────────────────────────────
+paths:
+  raw_data: "data/raw/twcs.csv"              # overridden by RAW_DATA_PATH env var
+  processed_dir: "data/processed"
+  sample_csv: "data/processed/sample.csv"
+  threads_csv: "data/processed/brand_threads.csv"
+  tfidf_index: "data/processed/tfidf_index.pkl"
+  intent_clusters: "data/processed/intent_clusters.pkl"
+  golden_set: "data/golden_set.csv"
+  evaluation_outputs: "evaluation/outputs"
+
+# ─── Brand ────────────────────────────────────────────────────────────────────
+brand:
+  name: "SpotifyCares"
+  # Measured from full twcs.csv scan (2026-09-14):
+  #   outbound_tweets: 43265
+  #   customer_messages_served: 41585
+
+# ─── Sampling ─────────────────────────────────────────────────────────────────
+sampling:
+  seed: 42
+  sample_size: 5000          # customer messages to keep in sample.csv
+  golden_set_size: 200       # target rows in golden_set.csv (150-250 acceptable)
+  train_test_split: 0.8      # 80/20 for baseline training
+
+# ─── Intent taxonomy ──────────────────────────────────────────────────────────
+intents:
+  n_clusters: 8
+  # Labels corrected after running scripts/derive_intents.py (2026-09-14)
+  # and inspecting real cluster content:
+  labels:
+    0: "general_inquiry"         # catch-all: music requests, album questions (48.7%)
+    1: "playback_issue"          # song/playlist play problems, shuffle issues (8.6%)
+    2: "subscription_billing"    # student discount, billing charges (3.1%)
+    3: "account_access"          # login, password reset, hacked accounts (10.6%)
+    4: "resolved_followup"       # thanks/fixed messages (5.0%)
+    5: "app_crash_or_bug"        # iOS/Android app bugs, update issues (8.3%)
+    6: "family_plan"             # family plan, premium plan management (3.4%)
+    7: "connectivity_device"     # version/compatibility, mixed device issues (12.4%)
+
+# ─── Retrieval ────────────────────────────────────────────────────────────────
+retrieval:
+  top_k: 3
+  low_similarity_threshold: 0.15   # below this → escalate
+  billing_low_threshold: 0.25      # extra-strict for billing intents
+
+# ─── Escalation ───────────────────────────────────────────────────────────────
+escalation:
+  min_intent_confidence: 0.40      # below this → escalate (ambiguous)
+  angry_sentiment_threshold: -0.6  # TextBlob/VADER polarity below this → escalate
+  threatening_keywords:
+    - "sue"
+    - "lawyer"
+    - "fraud"
+    - "scam"
+    - "report you"
+    - "trading standards"
+    - "legal action"
+  account_security_keywords:
+    - "locked"
+    - "banned"
+    - "hacked"
+    - "stolen"
+    - "unauthorized"
+    - "compromised"
+
+# ─── LLM judge ────────────────────────────────────────────────────────────────
+llm_judge:
+  model: "gpt-4o-mini"             # only used if OPENAI_API_KEY is set
+  judge_agreement_sample_size: 40  # rows in judge_agreement_sheet.csv
+
+# ─── TF-IDF ───────────────────────────────────────────────────────────────────
+tfidf:
+  max_features: 10000
+  ngram_range: [1, 2]
+  sublinear_tf: true

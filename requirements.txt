@@ -1,0 +1,13 @@
+pandas>=2.0.0
+scikit-learn>=1.5.0
+numpy>=1.26.0
+scipy>=1.11.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+nltk>=3.8.0
+tqdm>=4.66.0
+textblob>=0.18.0
+
+# Optional — only needed for LLM mode in evaluation/llm_judge.py
+# (requires OPENAI_API_KEY in .env; script auto-falls back to local scoring if absent)
+openai>=1.0.0

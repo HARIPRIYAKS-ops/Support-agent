@@ -1,0 +1,50 @@
+# Raw data — never commit the 5GB file
+data/raw/
+data/raw/*.csv
+
+# Stray root-level sample.csv (raw TWCS data; canonical copy is data/processed/sample.csv)
+/sample.csv
+
+# Processed data (reproducible from sample_data.py — optional to commit)
+# Uncomment below to also ignore processed files:
+# data/processed/
+
+# Environment variables (machine-specific secrets)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model artifacts (large)
+*.pkl
+*.joblib
+# Uncomment to track model files:
+# !data/processed/tfidf_index.pkl
+
+# Evaluation outputs (generated, not source)
+evaluation/outputs/
+
+# OS
+.DS_Store
+Thumbs.db
